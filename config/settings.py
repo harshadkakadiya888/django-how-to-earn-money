@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from datetime import timedelta
 from pathlib import Path
+from corsheaders.defaults import default_headers, default_methods
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,9 +45,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Must be first so CORS headers are added before other middleware responses.
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -157,17 +158,29 @@ SIMPLE_JWT = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CSRF_TRUSTED_ORIGINS = ["http://65.1.84.53"]
+CSRF_TRUSTED_ORIGINS = [
+    "https://*.vercel.app",
+    "https://*.ngrok-free.app",
+    "https://*.ngrok.io",
+    "http://65.1.84.53",
+    "https://65.1.84.53",
+]
 
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'http')
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-# --- CORS (browser requests from Vite / other dev origins to this API) ---
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOWED_ORIGINS = [
-        'http://localhost:8080',
-        'http://127.0.0.1:8080',
-        'http://localhost:8082',
-        'http://127.0.0.1:8082',
-    ]
+# --- CORS (Vercel frontend + ngrok/EC2 backend) ---
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
+# Include custom ngrok header and standard auth/content headers.
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "ngrok-skip-browser-warning",
+]
+
+# Explicitly allow all methods, including OPTIONS for preflight.
+CORS_ALLOW_METHODS = list(default_methods) + [
+    "OPTIONS",
+]
+
+# Cache preflight results in browsers.
+CORS_PREFLIGHT_MAX_AGE = 86400
