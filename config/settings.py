@@ -178,12 +178,16 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 # Explicitly allow all methods, including OPTIONS for preflight.
 CORS_ALLOW_METHODS = list(default_methods) + [
-    "OPTIONS",
-    "GET",
-    "POST",
-    "PUT",
-    "PATCH",
-    "DELETE",
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "ngrok-skip-browser-warning",
 ]
 
 # Cache preflight results in browsers.
