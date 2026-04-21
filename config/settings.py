@@ -45,7 +45,6 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    # Must be first so CORS headers are added before other middleware responses.
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -180,6 +179,11 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 # Explicitly allow all methods, including OPTIONS for preflight.
 CORS_ALLOW_METHODS = list(default_methods) + [
     "OPTIONS",
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
 ]
 
 # Cache preflight results in browsers.
