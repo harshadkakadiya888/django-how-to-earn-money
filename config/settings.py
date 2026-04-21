@@ -156,6 +156,8 @@ SIMPLE_JWT = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+CSRF_TRUSTED_ORIGINS = ["http://65.1.84.53"]
+
 # --- CORS (browser requests from Vite / other dev origins to this API) ---
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
