@@ -173,6 +173,8 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Include custom ngrok header and standard auth/content headers.
 CORS_ALLOW_HEADERS = list(default_headers) + [
+    "content-type",
+    "authorization",
     "ngrok-skip-browser-warning",
 ]
 
@@ -188,6 +190,9 @@ CORS_ALLOW_METHODS = list(default_methods) + [
     "x-csrftoken",
     "x-requested-with",
     "ngrok-skip-browser-warning",
+    "GET",
+    "POST",
+    "OPTIONS",
 ]
 
 # Cache preflight results in browsers.
