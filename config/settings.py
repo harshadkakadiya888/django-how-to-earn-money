@@ -198,3 +198,11 @@ CORS_ALLOW_METHODS = list(default_methods) + [
 
 # Cache preflight results in browsers.
 CORS_PREFLIGHT_MAX_AGE = 86400
+
+import os
+
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+
+import create_superuser
