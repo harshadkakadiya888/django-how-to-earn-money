@@ -216,3 +216,11 @@ else:
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+
+    # Allow Vercel preview + production domains (e.g. https://your-app.vercel.app)
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^https:\/\/.*\.vercel\.app$",
+    ]
+
+    # If you use cookie/session auth in production, you may also need:
+    # CORS_ALLOW_CREDENTIALS = True
