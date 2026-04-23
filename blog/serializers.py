@@ -123,7 +123,10 @@ class PostSerializer(serializers.ModelSerializer):
         allow_null=True,
         source="featured_image",
     )
-    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    category = serializers.PrimaryKeyRelatedField(
+    queryset=Category.objects.all(),
+    required=False
+)
     read_time = serializers.SerializerMethodField()
     article_summary = serializers.CharField(required=False, allow_blank=True)
     faqs_json = serializers.CharField(required=False, allow_blank=True)
