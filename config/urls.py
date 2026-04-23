@@ -28,6 +28,9 @@ def home(request):
 urlpatterns = [
     path('', home),
     path('admin/', admin.site.urls),
+    # JWT auth endpoints (both legacy and standard SimpleJWT aliases)
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair_standard'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh_standard'),
     path('api/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/', include('blog.urls')),
