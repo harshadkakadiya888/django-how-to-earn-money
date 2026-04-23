@@ -36,5 +36,4 @@ urlpatterns = [
     path('api/', include('blog.urls')),
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Images are stored in Cloudinary; avoid local `/media/` serving dependency.

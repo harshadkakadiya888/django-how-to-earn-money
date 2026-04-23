@@ -543,6 +543,9 @@ class PostDetailView(APIView):
         out = PostSerializer(instance, context={"request": request})
         return Response({"post": out.data})
 
+    def patch(self, request, post_key):
+        return self.put(request, post_key)
+
     def delete(self, request, post_key):
         obj = self.get_object(post_key)
         if not obj:

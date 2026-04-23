@@ -103,12 +103,11 @@ class CategorySerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        request = self.context.get("request")
-        if instance.image and request:
+        if instance.image:
             try:
-                data["image"] = request.build_absolute_uri(instance.image.url)
-            except Exception:
                 data["image"] = instance.image.url
+            except Exception:
+                data["image"] = None
         else:
             data["image"] = None
         return data
@@ -123,10 +122,7 @@ class PostSerializer(serializers.ModelSerializer):
         allow_null=True,
         source="featured_image",
     )
-    category = serializers.PrimaryKeyRelatedField(
-    queryset=Category.objects.all(),
-    required=False
-)
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
     read_time = serializers.SerializerMethodField()
     article_summary = serializers.CharField(required=False, allow_blank=True)
     faqs_json = serializers.CharField(required=False, allow_blank=True)
@@ -223,6 +219,18 @@ class PostSerializer(serializers.ModelSerializer):
         validated_data.pop("tags", None)
         if "tags" in self.initial_data:
             validated_data["tags"] = self._normalize_tags()
+
+        # Preserve existing Cloudinary image unless a new one is uploaded.
+        # Some clients send `image: null` / empty on edit; treat that as "no change".
+        if "featured_image" not in validated_data:
+            validated_data["featured_image"] = instance.featured_image
+        else:
+            incoming = validated_data.get("featured_image")
+            if incoming is None:
+                raw = self.initial_data.get("image", self.initial_data.get("featured_image", None))
+                if raw in (None, "", "null"):
+                    validated_data["featured_image"] = instance.featured_image
+
         return super().update(instance, validated_data)
 
     def get_read_time(self, obj):
@@ -232,8 +240,11 @@ class PostSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         request = self.context.get("request")
         featured_url = None
-        if instance.featured_image and request:
-            featured_url = request.build_absolute_uri(instance.featured_image.url)
+        if instance.featured_image:
+            try:
+                featured_url = instance.featured_image.url
+            except Exception:
+                featured_url = None
 
         cat = instance.category
         category_obj = {
