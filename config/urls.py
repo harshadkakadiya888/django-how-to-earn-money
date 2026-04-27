@@ -18,7 +18,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.http import HttpResponse
-from django.urls import include, path, re_path
+from django.urls import include, path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from blog.views import GenerateBlogPostView
@@ -34,17 +34,12 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh_standard'),
     path('api/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    # AI draft generation — multiple aliases (proxies / old deploys sometimes miss one path)
-    re_path(
-        r'^api/generate-post/?$',
-        GenerateBlogPostView.as_view(),
-        name='api_generate_post',
-    ),
-    re_path(
-        r'^api/ai/draft/?$',
-        GenerateBlogPostView.as_view(),
-        name='api_ai_draft',
-    ),
+    # AI generation — several paths so live/proxy setups still match one of them
+    path('ai-generate/', GenerateBlogPostView.as_view(), name='ai_generate_no_api_prefix'),
+    path('api/ai/draft', GenerateBlogPostView.as_view(), name='api_ai_draft_noslash'),
+    path('api/ai/draft/', GenerateBlogPostView.as_view(), name='api_ai_draft'),
+    path('api/generate-post', GenerateBlogPostView.as_view(), name='api_generate_post_noslash'),
+    path('api/generate-post/', GenerateBlogPostView.as_view(), name='api_generate_post'),
     path('api/', include('blog.urls')),
 ]
 

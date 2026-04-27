@@ -630,13 +630,29 @@ class PostRecommendationsView(APIView):
 @method_decorator(csrf_exempt, name="dispatch")
 class GenerateBlogPostView(APIView):
     """
-    POST /api/generate-post/
+    POST /api/generate-post/ (or /api/ai/draft/ or /ai-generate/)
     Body: { "title": "...", "structured": false }
     Uses Groq (settings.GROQ_API_KEY); never embed API keys in code.
+
+    GET (no auth): returns 200 JSON so you can verify the route is deployed (avoids confusing 404s).
     """
 
     permission_classes = (IsAuthenticated,)
     parser_classes = (JSONParser,)
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        return Response(
+            {
+                "ok": True,
+                "post": "Send POST with JSON { \"title\": \"...\" } and Authorization: Bearer <access>.",
+                "paths": ["/api/ai/draft/", "/ai-generate/", "/api/generate-post/"],
+            }
+        )
 
     def post(self, request):
         title = (request.data or {}).get("title", "")

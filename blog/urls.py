@@ -82,4 +82,5 @@ urlpatterns = [
     path("notifications/read-all/", NotificationReadAllView.as_view()),
     path("notifications/<int:pk>/read", NotificationReadView.as_view()),
     path("notifications/<int:pk>/read/", NotificationReadView.as_view()),
+    
 ]
