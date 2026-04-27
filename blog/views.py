@@ -659,7 +659,7 @@ class GenerateBlogPostView(APIView):
         if not isinstance(title, str) or not title.strip():
             return Response({"detail": "title is required."}, status=status.HTTP_400_BAD_REQUEST)
         title = title.strip()
-        # Default structured so POST { "title": "..." } returns content + summary + faqs.
+        # Default structured so POST { "title": "..." } returns content + summary + faqs + tags.
         structured = bool((request.data or {}).get("structured", True))
 
         try:
@@ -669,6 +669,7 @@ class GenerateBlogPostView(APIView):
                 "content": payload["content"],
                 "summary": payload.get("summary", ""),
                 "faqs": payload.get("faqs", []),
+                "tags": payload.get("tags", []),
             }
             if not structured:
                 return Response({"title": title, "content": payload["content"]})

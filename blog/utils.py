@@ -20,7 +20,11 @@ class GroqGenerationError(Exception):
     """Raised when Groq returns an error or the response cannot be parsed."""
 
 
-def _groq_chat_completion(messages: list, response_format: dict | None = None) -> dict:
+def _groq_chat_completion(
+    messages: list,
+    response_format: dict | None = None,
+    max_tokens: int = 1200,
+) -> dict:
     """
     Call Groq OpenAI-compatible chat completions API.
     Returns the parsed JSON body (dict).
@@ -35,7 +39,7 @@ def _groq_chat_completion(messages: list, response_format: dict | None = None) -
         "model": model,
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 1200,
+        "max_tokens": max_tokens,
     }
     if response_format:
         body["response_format"] = response_format
@@ -97,27 +101,154 @@ def _parse_json_from_model_text(text: str) -> dict:
         raise GroqGenerationError("Model did not return valid JSON.") from e
 
 
+# Cap article text sent to tag generation to stay within context limits.
+_TAG_SOURCE_MAX_CHARS = 12_000
+
+
+def _content_word_set(text: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", (text or "").lower()) if w}
+
+
+def _tag_tokens(tag: str) -> list[str]:
+    """Words in a tag (splits on whitespace and common separators)."""
+    s = re.sub(r"[-_/]+", " ", (tag or "").lower().strip())
+    return [p for p in s.split() if p]
+
+
+def _clean_seo_tags(raw_tags, title: str) -> list[str]:
+    """
+    Lowercase, drop empties, enforce max 2 words per tag, no duplicates in order,
+    and drop any tag that shares a word with the title.
+    """
+    if not isinstance(raw_tags, list):
+        return []
+    title_words = _content_word_set((title or "").lower())
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in raw_tags:
+        s = re.sub(r"\s+", " ", str(t).strip().lower())
+        if not s:
+            continue
+        words = s.split()
+        if len(words) > 2:
+            s = " ".join(words[:2])
+        if not s or s in seen:
+            continue
+        token_words = _tag_tokens(s)
+        if title_words and any(w in title_words for w in token_words):
+            continue
+        if len(token_words) > 2:
+            s = " ".join(token_words[:2])
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def generate_tags_from_content(content: str, title: str = "") -> dict:
+    """
+    Ask Groq for 5-8 SEO tags from the article body (not the title), tuned for
+    common search phrasing, natural language, specificity, and real-world topics.
+
+    Returns: { "tags": [str, ...] } with tags cleaned per app rules.
+    """
+    text = (content or "").strip()
+    if not text:
+        return {"tags": []}
+    title = (title or "").strip()
+    plain = re.sub(r"\s+", " ", strip_tags(text)).strip()
+    if not plain:
+        return {"tags": []}
+    snippet = plain[:_TAG_SOURCE_MAX_CHARS]
+
+    system = (
+        "You extract SEO topic tags for a blog post from the ARTICLE TEXT only.\n"
+        "Ignore any blog title; do not use words that appear in the given title list.\n\n"
+        "Every tag should read like a phrase people commonly search for on Google:\n"
+        "- Use natural, human keywords the way real readers and searchers phrase them, not robot-like labels or marketing filler.\n"
+        "- Be clear and specific to this article: name real topics, problems, tools, or ideas from the text, not vague words in isolation (e.g. do not use bare 'tips' or 'guide' unless part of a concrete 2-word phrase that matches the content).\n"
+        "- Stay grounded in real-world subjects that the article actually discusses; prefer terms that appear in or are clearly implied by the text.\n\n"
+        "Technical rules:\n"
+        "- 5 to 8 tags.\n"
+        "- Do NOT use or repeat any word from the blog title (for exclusion; title is provided only so you can avoid its words).\n"
+        "- At most 2 words per tag, lowercase, spaces between words, no duplicate tags.\n"
+        "- Avoid odd jargon, unnecessary buzzword stacks, or synthetic-sounding coinages.\n\n"
+        "Return ONLY valid JSON: { \"tags\": [ \"first tag\", \"second tag\" ] }"
+    )
+    user = f'Blog title (for exclusion, do not use these words in tags): "{title}"\n\nArticle text:\n{snippet}'
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    data = None
+    last_err: GroqGenerationError | None = None
+    for use_json_object in (True, False):
+        try:
+            completion = _groq_chat_completion(
+                messages,
+                response_format={"type": "json_object"} if use_json_object else None,
+                max_tokens=500,
+            )
+            model_text = _extract_message_text(completion)
+            data = _parse_json_from_model_text(model_text)
+            break
+        except GroqGenerationError as exc:
+            last_err = exc
+            if use_json_object:
+                continue
+            raise
+    if data is None:
+        raise last_err or GroqGenerationError("Groq tag generation failed.")
+
+    raw = data.get("tags", [])
+    return {"tags": _clean_seo_tags(raw, title)}
+
+
+def _normalize_faq_to_pipe_string(item) -> str | None:
+    """
+    Turn one FAQ from Groq (string or dict) into 'question|||answer'.
+    Returns None if the item is empty; returns the string unchanged if already pipe-shaped.
+    """
+    if item is None:
+        return None
+    if isinstance(item, str):
+        t = item.strip()
+        if not t:
+            return None
+        return t
+    if isinstance(item, dict):
+        q = (item.get("question") or item.get("q") or "").strip()
+        a = (item.get("answer") or item.get("a") or "").strip()
+        if not q and not a:
+            return None
+        return f"{q}|||{a}"
+    return None
+
+
 def _generate_blog_payload(title: str) -> dict:
     """
     Ask Groq for JSON: content (HTML), summary, faqs (3 strings "question|||answer").
+    SEO tags are generated in a follow-up call from the body text.
     """
     title = (title or "").strip()
     if not title:
         raise GroqGenerationError("Title is required.")
 
     system = (
-        "You are an expert SEO content writer. "
-        "You write original, helpful blog articles in valid HTML for a rich text editor. "
-        "Use semantic HTML: a short meta-oriented intro paragraph, then <h2>/<h3> headings, "
-        "<p>, <ul>/<li> where useful, <strong> for emphasis. "
-        "Include: introduction, multiple substantive sections with headings, a conclusion, "
-        "and an FAQ section with exactly 3 question/answer pairs (visible in the HTML). "
-        "Target the user-provided title; do not invent a different topic. "
-        "Return ONLY a JSON object with keys: "
-        '"content" (string, full article HTML), '
-        '"summary" (string, 1-3 sentences meta description), '
-        '"faqs" (array of exactly 3 strings; each string must be "question|||answer" with no newlines in the question).'
+    "You are an expert SEO content writer.\n\n"
+    "Write a high-quality blog article in HTML format.\n"
+    "Include exactly 3 useful FAQ items about the article topic.\n\n"
+    "Format for 'faqs': a JSON array of 3 items. Each item is EITHER:\n"
+    "- A string: the question, then the three characters |||, then the answer, e.g. "
+    '"What is X?|||X is ..."\n'
+    "- Or an object: { \"question\": \"...\", \"answer\": \"...\" }\n\n"
+    "Return ONLY JSON:\n"
+    '{ "content": "...", "summary": "...", "faqs": [] }'
     )
+    
     user = f'Blog title: "{title}"'
 
     messages = [
@@ -153,13 +284,29 @@ def _generate_blog_payload(title: str) -> dict:
     if not isinstance(faqs, list):
         faqs = []
     faqs_out = []
-    for item in faqs[:3]:
-        if isinstance(item, str) and item.strip():
-            faqs_out.append(item.strip())
+    for item in faqs:
+        if len(faqs_out) >= 3:
+            break
+        pipe = _normalize_faq_to_pipe_string(item)
+        if pipe:
+            faqs_out.append(pipe)
     while len(faqs_out) < 3:
         faqs_out.append("|||")
 
-    return {"content": content, "summary": summary, "faqs": faqs_out[:3]}
+    try:
+        tag_payload = generate_tags_from_content(content, title=title)
+        tags = tag_payload.get("tags", [])
+    except GroqGenerationError:
+        tags = []
+    if not isinstance(tags, list):
+        tags = []
+
+    return {
+    "content": content,
+    "summary": summary,
+    "faqs": faqs_out[:3],
+    "tags": tags
+    }
 
 
 def generate_blog_content(title: str) -> str:
@@ -173,7 +320,8 @@ def generate_blog_content(title: str) -> str:
 def generate_blog_structured(title: str) -> dict:
     """
     Same generation as generate_blog_content, but returns structured fields:
-    { "content": str, "summary": str, "faqs": [str, str, str] }  (faqs: "question|||answer")
+    { "content": str, "summary": str, "faqs": [str, str, str], "tags": [str, ...] }
+    (faqs: "question|||answer"; tags are derived from the generated body, not the title)
     """
     return _generate_blog_payload(title)
 
