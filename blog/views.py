@@ -650,7 +650,7 @@ class GenerateBlogPostView(APIView):
             {
                 "ok": True,
                 "post": "Send POST with JSON { \"title\": \"...\" } and Authorization: Bearer <access>.",
-                "paths": ["/api/ai/draft/", "/ai-generate/", "/api/generate-post/"],
+                "paths": ["/api/ai/ready/", "/api/generate-post/", "/api/ai/draft/", "/ai-generate/"],
             }
         )
 
