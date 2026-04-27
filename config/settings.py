@@ -18,10 +18,11 @@ from urllib.parse import urlparse
 from corsheaders.defaults import default_headers, default_methods
 
 from dotenv import load_dotenv
-load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+# Load `.env` from the same directory as `manage.py` (works no matter what the shell cwd is).
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -201,6 +202,11 @@ SIMPLE_JWT = {
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+                             
+# Groq — AI blog draft generation (`POST /api/generate-post/`). Set `GROQ_API_KEY` in `.env` or host env.
+# Optional: `GROQ_MODEL` (default is a current production model; `llama3-8b-8192` is deprecated on Groq).
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant").strip()
 
 CSRF_TRUSTED_ORIGINS = ["http://65.1.84.53"]
 

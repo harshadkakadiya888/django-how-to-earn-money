@@ -1,7 +1,10 @@
 import json
+from datetime import timedelta
 
+from django.conf import settings as django_settings
 from django.core.paginator import Paginator
-from django.db.models import F, ProtectedError, Q
+from django.db.models import Case, F, IntegerField, ProtectedError, Q, Value, When
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
@@ -11,11 +14,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Category, Comment, ContactMessage, NewsletterReview, NewsletterSubscriber, Notification, Post, PostLike
-from .notifications import notify_post_comment, notify_post_like, notify_post_like_authenticated_user
+from .notifications import (
+    notify_post_comment,
+    notify_post_like,
+    notify_post_like_authenticated_user,
+    notify_post_view,
+)
 try:
     from .models import Tag
 except ImportError:  # Keep compatibility when Tag model is not present.
     Tag = None
+from .utils import GroqGenerationError, generate_blog_content, generate_blog_structured
 from .serializers import (
     CategorySerializer,
     CommentSerializer,
@@ -26,6 +35,7 @@ from .serializers import (
     NewsletterSubscriberSerializer,
     NotificationSerializer,
     PostSerializer,
+    coerce_tags_to_list,
 )
 
 
@@ -69,7 +79,12 @@ def _record_post_view(request, post):
     if _is_blog_staff(request):
         return
     Post.objects.filter(pk=post.pk).update(views_count=F("views_count") + 1)
-    post.refresh_from_db(fields=["views_count"])
+    post.refresh_from_db(fields=["views_count", "title", "slug", "author"])
+    user = getattr(request, "user", None)
+    notify_post_view(
+        post=post,
+        request_user=user if getattr(user, "is_authenticated", False) else None,
+    )
 
 
 def _normalized_tag_names(request):
@@ -129,6 +144,23 @@ def _resolve_client_id(request):
     return str(value).strip().lower()
 
 
+def _resolve_anonymous_client_id(request):
+    """
+    When the client sends a verified email, use a stable id per read so likes dedupe
+    to one row per (post, reader email). Falls back to client_id or IP.
+    """
+    if getattr(request, "data", None) is not None:
+        email = request.data.get("email") or request.data.get("user_email")
+    else:
+        email = None
+    if not email:
+        email = request.GET.get("email") or request.headers.get("X-User-Email")
+    email = str(email or "").strip().lower()
+    if email and "@" in email:
+        return f"email:{email}"
+    return _resolve_client_id(request)
+
+
 def _resolve_actor(request):
     if getattr(request, "user", None) and request.user.is_authenticated:
         username = request.user.get_username() or ""
@@ -155,7 +187,7 @@ def _serialize_likers(post):
         {
             "client_id": like.client_id,
             "username": like.liker_name or like.client_id,
-            "email": like.liker_email or "",
+            "email": like.email or "",
             "liked_at": like.created_at.isoformat() if like.created_at else None,
         }
         for like in likes
@@ -554,6 +586,91 @@ class PostDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class PostRecommendationsView(APIView):
+    permission_classes = (AllowAny,)
+
+    def get(self, request, slug: str):
+        post = _resolve_post_by_lookup(str(slug))
+        if not post or not _post_visible_to_request(request, post):
+            return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Only recommend published posts.
+        qs = (
+            Post.objects.select_related("category")
+            .filter(status=Post.STATUS_PUBLISHED, category=post.category)
+            .exclude(pk=post.pk)
+        )
+
+        # Prefer tag similarity when tags exist.
+        tags = coerce_tags_to_list(getattr(post, "tags", ""))
+        tags = [t.strip().lower() for t in tags if str(t).strip()]
+        if tags:
+            tag_q = Q()
+            for t in tags[:12]:
+                # tags is stored as JSON string (legacy) so substring match is the practical option.
+                tag_q |= Q(tags__icontains=t)
+            qs = qs.filter(tag_q)
+
+        now = timezone.now()
+        boost = Case(
+            # simple "recent boost"
+            When(created_at__gte=now - timedelta(days=7), then=Value(200)),
+            When(created_at__gte=now - timedelta(days=30), then=Value(80)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+        qs = qs.annotate(score=F("views_count") + boost).order_by("-score", "-views_count", "-created_at")
+
+        rows = list(qs.values("title", "slug", "views_count")[:5])
+        return Response(
+            [{"title": r["title"], "slug": r["slug"], "views": r["views_count"]} for r in rows]
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class GenerateBlogPostView(APIView):
+    """
+    POST /api/generate-post/
+    Body: { "title": "...", "structured": false }
+    Uses Groq (settings.GROQ_API_KEY); never embed API keys in code.
+    """
+
+    permission_classes = (IsAuthenticated,)
+    parser_classes = (JSONParser,)
+
+    def post(self, request):
+        title = (request.data or {}).get("title", "")
+        if not isinstance(title, str) or not title.strip():
+            return Response({"detail": "title is required."}, status=status.HTTP_400_BAD_REQUEST)
+        title = title.strip()
+        # Default structured so POST { "title": "..." } returns content + summary + faqs.
+        structured = bool((request.data or {}).get("structured", True))
+
+        try:
+            payload = generate_blog_structured(title)
+            body = {
+                "title": title,
+                "content": payload["content"],
+                "summary": payload.get("summary", ""),
+                "faqs": payload.get("faqs", []),
+            }
+            if not structured:
+                return Response({"title": title, "content": payload["content"]})
+            return Response(body)
+        except GroqGenerationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception("generate-post failed")
+            msg = (
+                str(exc)
+                if getattr(django_settings, "DEBUG", False)
+                else "Generation failed. Please try again later."
+            )
+            return Response({"detail": msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class PostCommentListCreateView(APIView):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
@@ -572,6 +689,13 @@ class PostCommentListCreateView(APIView):
         if not post:
             return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
         qs = Comment.objects.filter(post=post).order_by("-created_at")
+        limit = request.GET.get("limit")
+        if limit is not None and str(limit).strip() != "":
+            try:
+                n = min(max(int(limit), 1), 100)
+                qs = qs[:n]
+            except (TypeError, ValueError):
+                pass
         ser = CommentSerializer(qs, many=True)
         return Response({"comments": ser.data})
 
@@ -631,25 +755,33 @@ class PostLikeToggleView(APIView):
         if not _post_visible_to_request(request, post):
             return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        client_id = _resolve_client_id(request)
+        client_id = _resolve_anonymous_client_id(request)
         username, email = _resolve_actor(request)
+        body_email = (request.data.get("email") or request.data.get("user_email") or "").strip() if request.data else ""
+        liker_email = body_email or email
+        if not username and body_email and "@" in body_email:
+            username = body_email.split("@", 1)[0] or "Reader"
         like = PostLike.objects.filter(post=post, client_id=client_id).first()
         if like:
             like.delete()
             liked = False
         else:
+            display_name = (username or "").strip() or (
+                body_email.split("@", 1)[0] if "@" in body_email else body_email
+            ) or ""
             PostLike.objects.create(
                 post=post,
                 client_id=client_id,
-                liker_name=username,
-                liker_email=email,
+                liker_name=display_name[:150],
+                email=liker_email,
             )
             actor_user = request.user if request.user.is_authenticated else None
             notify_post_like(
                 post=post,
                 user=actor_user,
-                display_name=username or None,
+                display_name=display_name or None,
                 client_id=client_id,
+                liker_email=liker_email or None,
             )
             liked = True
 
@@ -669,11 +801,57 @@ class PostLikeStatusView(APIView):
             return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
         if not _post_visible_to_request(request, post):
             return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
-        client_id = _resolve_client_id(request)
+        client_id = _resolve_anonymous_client_id(request)
         liked = PostLike.objects.filter(post=post, client_id=client_id).exists()
         likes_count = post.total_likes_count()
         likers = _serialize_likers(post)
         return Response({"liked": liked, "likes_count": likes_count, "likers": likers})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class PostLikesListView(APIView):
+    """Last N anonymous likes; registered (M2M) users listed separately (unordered)."""
+
+    permission_classes = (AllowAny,)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def get(self, request, post_id):
+        try:
+            post = Post.objects.get(pk=post_id)
+        except Post.DoesNotExist:
+            return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _post_visible_to_request(request, post):
+            return Response({"detail": "Post not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            limit = int(request.GET.get("limit", 10))
+        except (TypeError, ValueError):
+            limit = 10
+        limit = min(max(limit, 1), 50)
+        likes = PostLike.objects.filter(post=post).order_by("-created_at")[:limit]
+        recent = [
+            {
+                "name": l.liker_name or "",
+                "email": l.email or "",
+                "client_id": l.client_id,
+                "liked_at": l.created_at.isoformat() if l.created_at else None,
+            }
+            for l in likes
+        ]
+        reg = [
+            {
+                "username": u.get_username(),
+                "email": u.email or "",
+                "source": "account",
+            }
+            for u in post.liked_users.all()[:limit]
+        ]
+        return Response(
+            {
+                "likes_count": post.total_likes_count(),
+                "recent": recent,
+                "registered_users": reg,
+            }
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -748,11 +926,11 @@ class PostViewsAnalyticsView(APIView):
                     "status": p.status,
                 }
             )
-        top_viewed = rows[:25]
+        top_viewed = rows[:10]
         chart_series = sorted(
             [{"label": r["title"][:40] + ("…" if len(r["title"]) > 40 else ""), "views": r["views_count"]} for r in rows],
             key=lambda x: x["views"],
-        )
+        )[-10:]
         return Response(
             {
                 "top_viewed": top_viewed,
@@ -784,7 +962,13 @@ class NotificationReadView(APIView):
         updated = Notification.objects.filter(pk=pk, user=request.user).update(is_read=True)
         if not updated:
             return Response({"detail": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response({"detail": "Notification marked as read."})
+        unread = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response(
+            {
+                "detail": "Notification marked as read.",
+                "unread_count": unread,
+            }
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -794,7 +978,61 @@ class NotificationReadAllView(APIView):
 
     def post(self, request):
         Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
-        return Response({"detail": "All notifications marked as read."})
+        unread = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response({"detail": "All notifications marked as read.", "unread_count": unread})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class NotificationMarkReadView(APIView):
+    """
+    Mark notification(s) as read in one call.
+
+    Body (JSON), any one of:
+      { "id": 1 }
+      { "ids": [1, 2, 3] }
+      { "mark_all": true }
+    """
+
+    permission_classes = (IsAuthenticated,)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def post(self, request):
+        body = request.data if isinstance(request.data, dict) else {}
+
+        if body.get("mark_all"):
+            Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+            unread = Notification.objects.filter(user=request.user, is_read=False).count()
+            return Response({"updated": "all", "unread_count": unread})
+
+        ids: list = []
+        if "ids" in body and isinstance(body["ids"], list):
+            ids = [int(x) for x in body["ids"] if str(x).strip().lstrip("-").isdigit()]
+        elif body.get("id") is not None and str(body.get("id", "")).strip() != "":
+            try:
+                ids = [int(body["id"])]
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "Field `id` or `ids` (or `mark_all`) is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if not ids:
+            return Response(
+                {"detail": "Field `id` or `ids` (or `mark_all`) is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        count = (
+            Notification.objects.filter(user=request.user, id__in=ids)
+            .update(is_read=True)
+        )
+        unread = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response(
+            {
+                "updated": count,
+                "unread_count": unread,
+                "detail": f"Marked {count} notification(s) as read.",
+            }
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")

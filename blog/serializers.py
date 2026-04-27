@@ -4,6 +4,7 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import Category, Comment, ContactMessage, NewsletterReview, NewsletterSubscriber, Notification, Post
+from .notifications import summary_from_data
 from .utils import calculate_read_time, ensure_unique_slug
 
 
@@ -445,7 +446,25 @@ class CommentSerializer(serializers.ModelSerializer):
 
 
 class NotificationSerializer(serializers.ModelSerializer):
+    """
+    Exposes `kind` as `type` for a stable client contract.
+    """
+
+    type = serializers.CharField(source="kind", read_only=True)
+
     class Meta:
         model = Notification
-        fields = ("id", "kind", "message", "post", "is_read", "created_at")
-        read_only_fields = ("id", "created_at")
+        fields = ("id", "type", "data", "message", "post", "is_read", "created_at")
+        read_only_fields = ("id", "type", "data", "message", "post", "is_read", "created_at")
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            payload = {}
+        if "type" not in payload and instance.kind:
+            payload = {**payload, "type": instance.kind}
+        data["data"] = payload
+        if not (data.get("message") or "").strip():
+            data["message"] = summary_from_data(instance.kind, payload)
+        return data

@@ -68,3 +68,57 @@ class BlogApiTests(TestCase):
         self.assertEqual(res.status_code, 200)
         titles = {p["title"] for p in res.json()["posts"]}
         self.assertIn("Staff Draft", titles)
+
+    def test_post_recommendations_404_when_not_found(self):
+        res = self.client.get("/api/posts/does-not-exist/recommendations/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_post_recommendations_returns_top_5_same_category(self):
+        cat = Category.objects.create(name="RecCat", slug="rec-cat")
+        base = Post.objects.create(
+            title="Base",
+            slug="base-post",
+            content="c",
+            category=cat,
+            status=Post.STATUS_PUBLISHED,
+            tags=json.dumps(["alpha", "beta"]),
+            views_count=10,
+        )
+
+        # Similar tag posts
+        for i in range(7):
+            Post.objects.create(
+                title=f"R{i}",
+                slug=f"r-{i}",
+                content="c",
+                category=cat,
+                status=Post.STATUS_PUBLISHED,
+                tags=json.dumps(["alpha"]) if i % 2 == 0 else json.dumps(["gamma"]),
+                views_count=50 - i,
+            )
+
+        # Different category should be excluded
+        cat2 = Category.objects.create(name="Other", slug="other")
+        Post.objects.create(
+            title="OtherCat",
+            slug="other-cat",
+            content="c",
+            category=cat2,
+            status=Post.STATUS_PUBLISHED,
+            tags=json.dumps(["alpha"]),
+            views_count=999,
+        )
+
+        res = self.client.get(f"/api/posts/{base.slug}/recommendations/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIsInstance(data, list)
+        # Should return at most 5
+        self.assertLessEqual(len(data), 5)
+        # Never include current post
+        self.assertNotIn(base.slug, {r["slug"] for r in data})
+        # Enforce response format keys
+        if data:
+            self.assertIn("title", data[0])
+            self.assertIn("slug", data[0])
+            self.assertIn("views", data[0])

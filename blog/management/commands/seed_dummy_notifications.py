@@ -74,19 +74,47 @@ class Command(BaseCommand):
             recipient=user,
             kind=Notification.KIND_LIKE,
             post=posts[0],
-            message="Demo: Someone liked your post.",
+            data={
+                "type": "like",
+                "user": "Sonia",
+                "latest_user": "sonia@example.com",
+                "count": 5,
+                "others_count": 4,
+                "post_title": posts[0].title,
+                "post_id": posts[0].id,
+                "post_slug": posts[0].slug,
+            },
         )
         upsert_post_activity_notification(
             recipient=user,
             kind=Notification.KIND_COMMENT,
             post=posts[0],
-            message="Demo: New comment on your post — “Great write-up, thanks for sharing!”",
+            data={
+                "type": "comment",
+                "user": "Amit",
+                "latest_user": "amit@example.com",
+                "count": 3,
+                "others_count": 2,
+                "post_title": posts[0].title,
+                "post_id": posts[0].id,
+                "post_slug": posts[0].slug,
+                "comment_preview": "Great write-up, thanks for sharing!",
+            },
         )
         upsert_post_activity_notification(
             recipient=user,
             kind=Notification.KIND_LIKE,
             post=posts[1],
-            message="Demo: Your post received another like.",
+            data={
+                "type": "like",
+                "user": "Guest reader",
+                "latest_user": "reader@example.com",
+                "count": 1,
+                "others_count": 0,
+                "post_title": posts[1].title,
+                "post_id": posts[1].id,
+                "post_slug": posts[1].slug,
+            },
         )
 
         unread = Notification.objects.filter(user=user, is_read=False).count()

@@ -89,11 +89,11 @@ class PostLike(models.Model):
     post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="likes")
     client_id = models.CharField(max_length=200)
     liker_name = models.CharField(max_length=150, blank=True, default="")
-    liker_email = models.EmailField(blank=True, default="")
+    email = models.EmailField(blank=True, default="", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("post", "client_id")
+        unique_together = (("post", "client_id"),)
         ordering = ["-created_at"]
 
     def __str__(self):
@@ -142,11 +142,21 @@ class NewsletterReview(models.Model):
 
 
 class Notification(models.Model):
+    """
+    In-app notification. The API exposes `kind` as `type`.
+    `data` holds a structured JSON payload; `message` is an optional short summary
+    (legacy / admin / clients that do not read `data`).
+    """
+
     KIND_LIKE = "like"
     KIND_COMMENT = "comment"
+    KIND_VIEW = "view"
+    KIND_SYSTEM = "system"
     KIND_CHOICES = (
         (KIND_LIKE, "Like"),
         (KIND_COMMENT, "Comment"),
+        (KIND_VIEW, "View"),
+        (KIND_SYSTEM, "System"),
     )
 
     user = models.ForeignKey(
@@ -154,8 +164,10 @@ class Notification(models.Model):
         on_delete=models.CASCADE,
         related_name="notifications",
     )
-    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
-    message = models.TextField()
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, db_index=True)
+    # Structured payload, e.g. {"type": "like", "user": "Harshad", "post_title": "..."}
+    data = models.JSONField(default=dict, blank=True)
+    message = models.TextField(blank=True, default="")
     post = models.ForeignKey(
         Post,
         on_delete=models.CASCADE,
@@ -165,18 +177,26 @@ class Notification(models.Model):
     )
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["-updated_at", "-created_at"]
         constraints = [
+            # One activity row per (user, kind, post) for post-based kinds; many rows
+            # with post=NULL are allowed (e.g. system).
             models.UniqueConstraint(
                 fields=("user", "kind", "post"),
-                name="blog_notification_user_kind_post_uniq",
+                name="blog_notification_user_kind_post_uniq_nonnull",
+                condition=models.Q(post__isnull=False),
             ),
         ]
         indexes = [
             models.Index(fields=["user", "-created_at"], name="blog_notif_user_created"),
+            models.Index(
+                fields=["user", "is_read", "-created_at"],
+                name="blog_notif_user_read_cr",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.kind} for {self.user_id}: {self.message[:40]}"
+        return f"{self.kind} for {self.user_id}: {self.message[:40] or str(self.data)[:40]}"
