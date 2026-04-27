@@ -30,6 +30,9 @@ from .views import (
 )
 
 urlpatterns = [
+    # Also reachable as api/ai/draft/ via the parent `path("api/", include(...))` — not only the aliases in config/urls.py
+    path("ai/draft", GenerateBlogPostView.as_view()),
+    path("ai/draft/", GenerateBlogPostView.as_view()),
     path("generate-post", GenerateBlogPostView.as_view()),
     path("generate-post/", GenerateBlogPostView.as_view()),
     path("contact/<int:pk>", ContactMessageDetailView.as_view()),
