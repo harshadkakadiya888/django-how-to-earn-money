@@ -636,7 +636,7 @@ class GenerateBlogPostView(APIView):
 
     GET (no auth): returns 200 JSON so you can verify the route is deployed (avoids confusing 404s).
     """
-
+#  harshad
     permission_classes = (IsAuthenticated,)
     parser_classes = (JSONParser,)
 
